@@ -7,7 +7,7 @@ FastAPI backend for a 100% open-source, multi-country (5-region) SaaS LMS with t
 | **Flow A** | Trainer → Trainee | Trainer submits a performance evaluation; it is persisted in PostgreSQL | Celery worker retrieves the trainee's `pgvector` profile and generates a personalised 3-step action plan (`ai_action_plan`) |
 | **Flow B** | Trainee → Trainer | Trainee submits a **strictly anonymous** weekly survey (pacing / clarity / difficulty); aggregates feed trainer trends and the 5-country admin dashboard | Trend embeddings stored in `vector_memories` |
 
-**Current scope:** Phase 1 (foundation, database, auth) + Phase 2 (core LMS and manual two-way feedback APIs). Phase 3 async AI (Celery + LlamaIndex + vLLM) is a clean placeholder in [app/worker/celery_app.py](app/worker/celery_app.py) — tasks log and return `{"status": "stub"}`.
+**Current scope:** Phase 1 (foundation, database, auth) + Phase 2 (core LMS and manual two-way feedback APIs), plus the local auth module in [auth/](auth/) (email/password, Google sign-in, OTP password reset — see [auth/AGENTS.md](auth/AGENTS.md)). Phase 3 async AI (Celery + LlamaIndex + vLLM) is a clean placeholder in [app/worker/celery_app.py](app/worker/celery_app.py) — tasks log and return `{"status": "stub"}`.
 
 ## Tech stack (open-source only)
 
@@ -15,7 +15,7 @@ FastAPI backend for a 100% open-source, multi-country (5-region) SaaS LMS with t
 - **ORM/migrations:** SQLAlchemy 2, Alembic, `psycopg2-binary`
 - **Validation/config:** Pydantic v2, `pydantic-settings`
 - **Database:** single PostgreSQL database `lms_db` + `pgvector` extension (vector memory lives in the same DB — no second database)
-- **Auth/RBAC:** Keycloak JWT (RS256 via JWKS), roles `trainee` / `trainer` / `admin`
+- **Auth/RBAC:** two systems — Keycloak JWT (RS256 via JWKS) for `/api/v1`, and the local [auth/](auth/) module (Argon2 via `pwdlib[argon2]`, HS256 JWTs, Google ID tokens via `google-auth`) for `/auth`; roles `trainee` / `trainer` / `admin`
 - **File storage:** Supabase Object Storage — PostgreSQL stores **URLs only**, never file bytes
 - **Async/AI (Phase 3 stub):** Celery + Redis broker, LlamaIndex, vLLM
 - **Frontend consumer:** Next.js (not in this folder) on `http://localhost:3000`
@@ -35,8 +35,10 @@ HTTP request
 ```text
 backend/
 ├── AGENTS.md                  product spec / agent instructions
+├── auth/                      local auth module (own AGENTS.md): router · schemas · models
+│                              service · security · dependencies · email
 ├── alembic/                   migrations (env.py creates the `vector` extension on upgrade)
-│   └── versions/              7fae77cd7652_initial_schema.py = all 14 tables
+│   └── versions/              7fae77cd7652 = initial 14 tables · cef4be023a33 = auth fields + OTP table (current head)
 ├── app/
 │   ├── main.py                FastAPI app, CORS (localhost:3000), /api/v1 router registration
 │   ├── core/
@@ -50,7 +52,7 @@ backend/
 │   ├── api/v1/                users · cohorts · courses · assignments
 │   │                          evaluations (Flow A) · surveys (Flow B) · admin
 │   └── worker/celery_app.py   Phase 3 placeholder tasks
-├── tests/                     pytest suite (SQLite + unverified test JWTs)
+├── tests/                     pytest suite, 13 tests (SQLite + test JWTs; test_api.py + test_auth.py)
 ├── .env.example               template — copy to .env, never commit .env
 ├── alembic.ini
 └── requirements.txt
@@ -82,26 +84,44 @@ secrets should be injected.
 | `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Phase 3 worker (Redis) | `redis://localhost:6379/0` |
 | `SUPABASE_URL` | Object-storage base (URLs stored in DB) | `https://<project>.supabase.co` |
 | `CORS_ORIGINS` | Allowed frontend origins | `["http://localhost:3000"]` |
+| `JWT_SECRET_KEY` | Signs local `/auth` JWTs (required for login) | long random hex — generate, never commit |
+| `GOOGLE_CLIENT_ID` | Verifies Google ID tokens on `POST /auth/google` | `<id>.apps.googleusercontent.com` |
+| `OTP_EXPIRE_MINUTES` / `OTP_MAX_ATTEMPTS` | Password-reset OTP lifetime / failed-try cap | `10` / `5` |
+| `SMTP_HOST` (+ `SMTP_PORT/USERNAME/PASSWORD/FROM`) | OTP email delivery; empty host = print OTP to console (dev only) | `smtp.example.com` |
 
 Notes: URL-encode special password characters (`@` → `%40`, `:` → `%3A`, `/` → `%2F`).
 The default in `config.py` (`lms:lms@…`) is a local-dev fallback only — `.env` overrides it.
 To change the password later, update **both** places: the segment in `.env`, and the role itself
 (`ALTER USER lms WITH PASSWORD 'new-secret';` — see Database commands below).
 
-### Auth model (Keycloak)
+### Auth model — two coexisting systems
 
-Every `/api/v1` route requires `Authorization: Bearer <Keycloak JWT>`. [app/core/security.py](app/core/security.py)
-verifies the RS256 signature against Keycloak's JWKS (`{server}/realms/{realm}/protocol/openid-connect/certs`),
-extracts roles from `realm_access.roles` / `resource_access[<client>].roles`, then maps `sub` → `users.keycloak_id`.
-A token alone is not enough for most endpoints: the user must first be **provisioned** in PostgreSQL via
-`POST /api/v1/users/me/sync` (creates the `users` row — and a `trainee_profiles` row for trainees — from the token).
-After that the **DB role is authoritative** for endpoint permissions.
+**1. Keycloak for `/api/v1` (LMS routes).** Every `/api/v1` route requires `Authorization: Bearer <Keycloak JWT>`.
+[app/core/security.py](app/core/security.py) verifies the RS256 signature against Keycloak's JWKS
+(`{server}/realms/{realm}/protocol/openid-connect/certs`), extracts roles from `realm_access.roles` /
+`resource_access[<client>].roles`, then maps `sub` → `users.keycloak_id`. A token alone is not enough for most
+endpoints: the user must first be **provisioned** in PostgreSQL via `POST /api/v1/users/me/sync` (creates the
+`users` row — and a `trainee_profiles` row for trainees — from the token). After that the **DB role is authoritative**.
 
-## Database schema (14 tables, one PostgreSQL DB)
+**2. Local auth for `/auth` ([auth/](auth/), rules in [auth/AGENTS.md](auth/AGENTS.md)).** Self-registration and
+sign-in without Keycloak, mounted at `/auth` in [app/main.py](app/main.py):
+
+- `POST /auth/register` — Argon2-hashes the password (`pwdlib[argon2]`); plaintext is never stored, logged, or returned. Duplicate email → `409`. New trainees also get a `trainee_profiles` row.
+- `POST /auth/login` — verifies the Argon2 hash, returns an HS256 JWT signed with `JWT_SECRET_KEY` (60 min default). Unknown email uses a dummy-hash verify so timing does not reveal accounts.
+- `POST /auth/google` — verifies the Google ID token against `GOOGLE_CLIENT_ID` (`google-auth`), upserts by unique `google_sub` (linking to an existing account with the same email). Google-only accounts have `hashed_password = NULL` and get a graceful "continue with Google" `401` on password login.
+- `POST /auth/forgot-password` — creates a 6-digit OTP (`secrets`), stores **only its SHA-256 hash** with a 10-minute expiry, invalidates prior unused OTPs, and delivers via SMTP — or prints to the server console when `SMTP_HOST` is empty (dev). **Always** returns the same generic `200` message, existing email or not (no enumeration).
+- `POST /auth/reset-password` — generic `400` on any failure; wrong codes increment `attempts`, the OTP is invalidated at 5 attempts, on expiry, and after one successful use (which also lets a Google-only account set a password).
+- `GET /auth/me` — example protected route using [auth/dependencies.py](auth/dependencies.py) `get_current_user` / `require_roles`.
+
+Both systems share the same `users` table: local users have `keycloak_id = NULL`; Keycloak users have
+`hashed_password = NULL` until they set one. Local `/auth` JWTs currently authenticate `/auth` routes only —
+`/api/v1` still expects Keycloak tokens.
+
+## Database schema (15 tables, one PostgreSQL DB)
 
 | Group | Tables |
 |---|---|
-| Users & regions | `countries`, `users` (`keycloak_id` unique), `trainee_profiles` |
+| Users & regions | `countries`, `users` (`keycloak_id` unique/nullable, `google_sub` unique/nullable, `hashed_password` nullable), `trainee_profiles`, `password_reset_otps` (hash only, expiry, attempts, used) |
 | Cohorts & courses | `cohorts`, `enrollments`, `courses`, `modules` (`meeting_link`, `ai_adapted_lesson_plan`), `course_materials` (Supabase URL only) |
 | Work & attendance | `assignments`, `assignment_submissions`, `attendance` |
 | Two-way feedback | `trainer_evaluations` (Flow A, `ai_action_plan` nullable), `trainee_surveys` (Flow B) |
@@ -117,10 +137,13 @@ Non-negotiable rules enforced in code (see [AGENTS.md](AGENTS.md) §5):
 - **Timestamps:** stored timezone-aware UTC; the frontend localises by the user's `timezone`.
 - **GDPR:** `DELETE /api/v1/users/me`, `DELETE /api/v1/users/{id}` and `DELETE /api/v1/admin/users/{id}` remove the user **and** their `vector_memories`.
 
-## API overview (prefix `/api/v1`)
+## API overview
+
+Local auth lives under `/auth` (no `/api/v1` prefix); everything else is under `/api/v1`.
 
 | Area | Key endpoints |
 |---|---|
+| Auth (`/auth`) | `POST /auth/register`, `POST /auth/login`, `POST /auth/google`, `POST /auth/forgot-password`, `POST /auth/reset-password`, `GET /auth/me` |
 | Users | `POST /users/me/sync`, `GET/PATCH/DELETE /users/me`, `PUT /users/me/profile`, `GET /countries`, `POST /countries` (admin) |
 | Cohorts | `POST/GET /cohorts`, `PATCH/DELETE /cohorts/{id}`, `POST/GET /cohorts/{id}/enrollments` |
 | Courses | `POST/GET /cohorts/{id}/courses`, `POST/GET /courses/{id}/modules`, `POST/GET /modules/{id}/materials` |
@@ -142,9 +165,10 @@ python -m venv .venv
 # 2. Install dependencies (use the venv interpreter directly — no activation needed)
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-# 3. Create your local config and set the real password in DATABASE_URL
+# 3. Create your local config: set the DB password AND a JWT secret
 Copy-Item .env.example .env
 notepad .env        # replace change-me in DATABASE_URL=postgresql+psycopg2://lms:<password>@localhost:5432/lms_db
+                    # and set JWT_SECRET_KEY to a long random value (login fails without it)
 
 # 4. Make sure PostgreSQL is running (service name on this machine)
 Get-Service postgresql-x64-18
@@ -223,8 +247,11 @@ psql -h localhost -U lms -d lms_db -c "SELECT * FROM alembic_version;"  # applie
 .\.venv\Scripts\python.exe -m alembic downgrade -1      # roll back one migration
 ```
 
-The committed initial migration is `alembic/versions/7fae77cd7652_initial_schema.py`.
-It contains `import pgvector.sqlalchemy` at the top — keep that line in future autogenerated
+Committed migrations: `7fae77cd7652_initial_schema.py` (14 tables) and
+`cef4be023a33_add_auth_fields_and_password_reset_otps.py` (`users.hashed_password`, `users.google_sub`,
+nullable `keycloak_id`, `password_reset_otps`) — `alembic current` should show `cef4be023a33 (head)`.
+[alembic/env.py](alembic/env.py) imports both `app.db.models` and `auth.models` so autogenerate sees every table.
+The initial migration contains `import pgvector.sqlalchemy` at the top — keep that line in future autogenerated
 migrations too, otherwise upgrading fails with `NameError: name 'pgvector' is not defined`.
 
 ### FastAPI server
@@ -239,8 +266,9 @@ Invoke-WebRequest http://127.0.0.1:8000/docs            # 200 = docs page up
 ### Tests
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest                    # full suite (SQLite, no Postgres/Keycloak needed)
-.\.venv\Scripts\python.exe -m pytest tests/test_api.py -q
+.\.venv\Scripts\python.exe -m pytest                    # full suite: 13 tests (SQLite, no Postgres/Keycloak/Google needed)
+.\.venv\Scripts\python.exe -m pytest tests/test_api.py -q   # 8 LMS/API tests
+.\.venv\Scripts\python.exe -m pytest tests/test_auth.py -q  # 5 auth tests (Google verifier is mocked)
 .\.venv\Scripts\python.exe -m pytest -k survey          # single area, e.g. Flow B anonymity
 ```
 
@@ -251,7 +279,41 @@ Invoke-WebRequest http://127.0.0.1:8000/docs            # 200 = docs page up
 .\.venv\Scripts\python.exe -m celery -A app.worker.celery_app.celery_app worker --loglevel=info
 ```
 
-### First API calls (with a Keycloak token)
+### Checking endpoints in Swagger UI
+
+```powershell
+# Terminal 1: start the server (keep it open) — Terminal 2: open the docs
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+Start-Process "http://localhost:8000/docs"
+Invoke-RestMethod http://127.0.0.1:8000/health          # {"status":"ok"}
+```
+
+In the docs page, expand any endpoint → **Try it out** → edit the example body → **Execute**.
+For protected routes (`GET /auth/me`, all `/api/v1` routes): first get a token (`POST /auth/login` for
+`/auth` routes, a Keycloak token for `/api/v1`), click **Authorize** (top-right), paste `Bearer <token>`,
+then execute. Without a token you will see `401` — expected. The password-reset OTP appears in the
+Terminal 1 (uvicorn) console as `[dev email] Password-reset OTP for …` when `SMTP_HOST` is empty.
+
+### First API calls — local auth (`/auth`, no Keycloak needed)
+
+```powershell
+$base = "http://127.0.0.1:8000"
+
+# Register -> login -> me
+Invoke-RestMethod -Method Post "$base/auth/register" -ContentType application/json `
+  -Body '{"email":"check@example.com","password":"password123","full_name":"Check User"}'
+$login = Invoke-RestMethod -Method Post "$base/auth/login" -ContentType application/json `
+  -Body '{"email":"check@example.com","password":"password123"}'
+Invoke-RestMethod "$base/auth/me" -Headers @{ Authorization = "Bearer $($login.access_token)" }
+
+# Forgot/reset (generic 200 either way; read the OTP from the uvicorn console, paste it below)
+Invoke-RestMethod -Method Post "$base/auth/forgot-password" -ContentType application/json `
+  -Body '{"email":"check@example.com"}'
+Invoke-RestMethod -Method Post "$base/auth/reset-password" -ContentType application/json `
+  -Body '{"email":"check@example.com","otp":"PASTE_OTP_HERE","new_password":"newpassword1"}'
+```
+
+### First API calls — LMS (with a Keycloak token)
 
 ```powershell
 $token = "<keycloak-access-token>"
@@ -280,6 +342,11 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/surveys/trainee
 | Port 8000 already in use | Another Uvicorn is running. Stop it (Ctrl+C in its window) or start with `--port 8001`. |
 | Docs load but every `/api/v1` call is `401` | No/expired Keycloak token, or user not provisioned. Send a valid Bearer token and call `POST /api/v1/users/me/sync` once. `403` means your DB role lacks permission for that endpoint. |
 | Tables missing / `relation "users" does not exist` | Migrations not applied. Run `alembic upgrade head` from `backend\`. |
+| `/auth/*` returns `404` in the docs | The running server predates the auth module. Restart Uvicorn (or use `--reload`) from `backend\`. |
+| `POST /auth/login` returns `500` "JWT_SECRET_KEY is not configured" | Set a long random `JWT_SECRET_KEY` in `.env` and restart the server. |
+| `POST /auth/google` returns `503` / `401` | `503`: set `GOOGLE_CLIENT_ID` in `.env`. `401`: the ID token is expired, for another client, or the verifier is unreachable — use a fresh token from your Google OAuth client. |
+| `POST /auth/reset-password` returns `400` | Generic failure by design: wrong code, code expired (10 min), 5 failed attempts reached, or code already used. Request a fresh OTP; in dev read it from the uvicorn console. |
+| Verify auth state in the DB | `psql … -c "SELECT email, google_sub IS NOT NULL AS has_google, hashed_password IS NOT NULL AS has_password FROM users;"` and `SELECT user_id, attempts, used, expires_at FROM password_reset_otps ORDER BY id DESC LIMIT 3;` — `otp_hash` is a SHA-256 hash, never the code itself. |
 
 ## Out of scope (by design)
 
