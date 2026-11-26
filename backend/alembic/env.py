@@ -7,6 +7,7 @@ from alembic import context
 from app.core.config import settings
 from app.db.database import Base
 import app.db.models  # noqa: F401  (registers all tables)
+import auth.models  # noqa: F401  (registers PasswordResetOTP for autogenerate)
 
 config = context.config
 if config.config_file_name is not None:

@@ -42,7 +42,10 @@ class User(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    keycloak_id: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    # Nullable: local auth (backend/auth) users have no Keycloak identity.
+    keycloak_id: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
+    hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    google_sub: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), index=True, nullable=False)

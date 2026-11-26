@@ -2,6 +2,8 @@ import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 os.environ.setdefault("KEYCLOAK_VERIFY_SIGNATURE", "false")
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-for-auth-tests-only-0123456789")
+os.environ.setdefault("GOOGLE_CLIENT_ID", "test-google-client-id")
 
 import jwt as pyjwt
 import pytest
@@ -12,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.database import Base, get_db
 import app.db.models  # noqa: F401
+import auth.models  # noqa: F401  (PasswordResetOTP table for create_all)
 from app.main import app
 
 engine = create_engine(
