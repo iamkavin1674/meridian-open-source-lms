@@ -1,5 +1,5 @@
 import { Bot, Loader2, Send, Sparkles, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const STARTER_PROMPTS = [
   "Explain my latest trainer feedback",
@@ -8,8 +8,26 @@ const STARTER_PROMPTS = [
   "Build a 30-min study plan for today",
 ];
 
+const BUTTON_SIZE = 52;
+const EDGE_MARGIN = 12;
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function getInitialIconPos() {
+  if (typeof window === "undefined") {
+    return { x: 16, y: 340 };
+  }
+  return {
+    x: 16,
+    y: clamp(Math.round(window.innerHeight * 0.55), 80, window.innerHeight - BUTTON_SIZE - EDGE_MARGIN),
+  };
+}
+
 export default function AICoachDrawer({
   isOpen,
+  onToggle,
   onClose,
   messages,
   isThinking,
@@ -18,8 +36,48 @@ export default function AICoachDrawer({
   draftPrompt,
 }) {
   const [input, setInput] = useState("");
+  const [iconPos, setIconPos] = useState(getInitialIconPos);
+  const [isDragging, setIsDragging] = useState(false);
+  const [viewport, setViewport] = useState(() => ({
+    width: typeof window !== "undefined" ? window.innerWidth : 1280,
+    height: typeof window !== "undefined" ? window.innerHeight : 800,
+  }));
+
   const inputRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const dragRef = useRef({
+    active: false,
+    moved: false,
+    startClientX: 0,
+    startClientY: 0,
+    startX: 0,
+    startY: 0,
+  });
+
+  // Track viewport size and keep floating icon clamped inside bounds.
+  useEffect(() => {
+    function handleResize() {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      setViewport({ width, height });
+      setIconPos((prev) => ({
+        x: clamp(prev.x, EDGE_MARGIN, width - BUTTON_SIZE - EDGE_MARGIN),
+        y: clamp(prev.y, EDGE_MARGIN, height - BUTTON_SIZE - EDGE_MARGIN),
+      }));
+    }
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  // Close popup on Escape key.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    function handleKeyDown(event) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
 
   // Pre-load contextual prompt when triggered via a card's "Ask AI" button.
   useEffect(() => {
@@ -28,7 +86,7 @@ export default function AICoachDrawer({
       if (isOpen) {
         const timer = setTimeout(() => {
           inputRef.current?.focus();
-        }, 120);
+        }, 160);
         return () => clearTimeout(timer);
       }
     }
@@ -41,6 +99,53 @@ export default function AICoachDrawer({
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages, isThinking, isOpen]);
+
+  const handlePointerDown = useCallback(
+    (event) => {
+      if (event.button !== 0 && event.pointerType === "mouse") return;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      dragRef.current = {
+        active: true,
+        moved: false,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startX: iconPos.x,
+        startY: iconPos.y,
+      };
+      setIsDragging(true);
+    },
+    [iconPos]
+  );
+
+  const handlePointerMove = useCallback(
+    (event) => {
+      const drag = dragRef.current;
+      if (!drag.active) return;
+      const dx = event.clientX - drag.startClientX;
+      const dy = event.clientY - drag.startClientY;
+      if (!drag.moved && Math.hypot(dx, dy) > 5) {
+        drag.moved = true;
+      }
+      if (drag.moved) {
+        setIconPos({
+          x: clamp(drag.startX + dx, EDGE_MARGIN, viewport.width - BUTTON_SIZE - EDGE_MARGIN),
+          y: clamp(drag.startY + dy, EDGE_MARGIN, viewport.height - BUTTON_SIZE - EDGE_MARGIN),
+        });
+      }
+    },
+    [viewport]
+  );
+
+  const handlePointerUp = useCallback(() => {
+    const drag = dragRef.current;
+    if (!drag.active) return;
+    const wasMoved = drag.moved;
+    drag.active = false;
+    setIsDragging(false);
+    if (!wasMoved) {
+      onToggle?.();
+    }
+  }, [onToggle]);
 
   function handleSubmit(event) {
     event.preventDefault();
@@ -56,24 +161,68 @@ export default function AICoachDrawer({
     onSendMessage(prompt);
   }
 
+  // Compute floating popup position & transformOrigin so it originates directly from the icon.
+  const popupWidth = Math.min(390, viewport.width - EDGE_MARGIN * 2);
+  const popupHeight = Math.min(540, viewport.height - EDGE_MARGIN * 2);
+  const iconCenterX = iconPos.x + BUTTON_SIZE / 2;
+  const iconCenterY = iconPos.y + BUTTON_SIZE / 2;
+
+  const openToRight = iconCenterX < viewport.width / 2;
+  const rawLeft = openToRight ? iconPos.x : iconPos.x + BUTTON_SIZE - popupWidth;
+  const popupLeft = clamp(rawLeft, EDGE_MARGIN, viewport.width - popupWidth - EDGE_MARGIN);
+
+  const openDownward = iconCenterY < viewport.height / 2;
+  const rawTop = openDownward ? iconPos.y : iconPos.y + BUTTON_SIZE - popupHeight;
+  const popupTop = clamp(rawTop, EDGE_MARGIN, viewport.height - popupHeight - EDGE_MARGIN);
+
+  const originX = clamp(iconCenterX - popupLeft, 16, popupWidth - 16);
+  const originY = clamp(iconCenterY - popupTop, 16, popupHeight - 16);
+
   return (
     <>
-      {/* Mobile backdrop */}
-      {isOpen && (
-        <div
-          aria-hidden="true"
-          onClick={onClose}
-          className="fixed inset-0 z-40 bg-ink-deep/55 backdrop-blur-xs lg:hidden"
-        />
-      )}
+      {/* Draggable Floating AI Coach Icon */}
+      <button
+        type="button"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        aria-label={isOpen ? "Close AI Study Coach" : "Open AI Study Coach (drag to move)"}
+        aria-expanded={isOpen}
+        title="AI Study Coach · Drag anywhere"
+        style={{
+          left: `${iconPos.x}px`,
+          top: `${iconPos.y}px`,
+          width: `${BUTTON_SIZE}px`,
+          height: `${BUTTON_SIZE}px`,
+          touchAction: "none",
+        }}
+        className={`fixed z-50 flex select-none items-center justify-center rounded-full border shadow-lg transition-shadow ${
+          isDragging ? "cursor-grabbing scale-105 shadow-xl" : "cursor-grab hover:shadow-xl"
+        } ${
+          isOpen
+            ? "border-lagoon bg-ink text-white dark:border-emerald-400 dark:bg-white dark:text-ink"
+            : "border-lagoon/30 bg-lagoon text-white hover:bg-lagoon-deep dark:border-emerald-300/40 dark:bg-emerald-500 dark:text-ink-deep dark:hover:bg-emerald-400"
+        }`}
+      >
+        <Sparkles size={22} aria-hidden />
+      </button>
 
+      {/* Overlapping Floating AI Coach Pop-up originating from the icon */}
       <aside
         aria-label="AI Study Coach"
         aria-hidden={!isOpen}
-        className={`fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-ink/10 bg-white shadow-xl transition-all duration-300 dark:border-white/10 dark:bg-ink sm:w-[400px] lg:sticky lg:top-16 lg:z-20 lg:h-[calc(100vh-4rem)] lg:shrink-0 lg:shadow-none ${
+        style={{
+          left: `${popupLeft}px`,
+          top: `${popupTop}px`,
+          width: `${popupWidth}px`,
+          height: `${popupHeight}px`,
+          transformOrigin: `${originX}px ${originY}px`,
+        }}
+        className={`fixed z-50 flex flex-col overflow-hidden rounded-2xl border border-ink/15 bg-white shadow-2xl transition-all duration-250 ease-out dark:border-white/15 dark:bg-ink ${
           isOpen
-            ? "translate-x-0 lg:w-[380px] xl:w-[400px]"
-            : "pointer-events-none translate-x-full lg:w-0 lg:overflow-hidden lg:border-l-0"
+            ? "scale-100 opacity-100"
+            : "pointer-events-none scale-0 opacity-0"
         }`}
       >
         {/* Header */}

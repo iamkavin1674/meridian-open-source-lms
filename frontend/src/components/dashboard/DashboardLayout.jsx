@@ -1,4 +1,4 @@
-import { Flame, Menu, Sparkles } from "lucide-react";
+import { Flame, LogOut, Menu, Settings } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { LEARNING_STREAK } from "../../data/mockStudentDashboard.js";
@@ -39,8 +39,6 @@ export default function DashboardLayout({
   onSelectNav,
   user,
   onSignOut,
-  isAiOpen,
-  onToggleAi,
   drawer,
   children,
 }) {
@@ -95,9 +93,6 @@ export default function DashboardLayout({
         onSelectNav={onSelectNav}
         isOpenMobile={mobileMenuOpen}
         onCloseMobile={() => setMobileMenuOpen(false)}
-        isAiOpen={isAiOpen}
-        onToggleAi={onToggleAi}
-        onSignOut={onSignOut}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -133,22 +128,8 @@ export default function DashboardLayout({
             </h1>
           </div>
 
-          {/* Top-right: AI Coach + ThemeToggle + Clickable Profile Avatar & Username */}
-          <div className="flex shrink-0 items-center gap-2.5">
-            <button
-              type="button"
-              onClick={onToggleAi}
-              aria-expanded={isAiOpen}
-              className={`inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors ${
-                isAiOpen
-                  ? "border-lagoon bg-lagoon text-white dark:border-emerald-400 dark:bg-emerald-500 dark:text-ink-deep"
-                  : "border-ink/15 bg-white text-ink hover:border-lagoon/50 hover:text-lagoon dark:border-white/15 dark:bg-ink-deep dark:text-slate-200 dark:hover:border-emerald-400/50 dark:hover:text-emerald-300"
-              }`}
-            >
-              <Sparkles size={14} aria-hidden />
-              <span className="hidden sm:inline">AI Coach</span>
-            </button>
-
+          {/* Top-right: ThemeToggle + Profile + Settings + Sign Out */}
+          <div className="flex shrink-0 items-center gap-2">
             <ThemeToggle isDark={isDark} onToggle={toggleTheme} inline />
 
             <button
@@ -179,6 +160,32 @@ export default function DashboardLayout({
               <span className="hidden max-w-[140px] truncate text-xs font-semibold text-ink dark:text-white sm:inline">
                 {displayName}
               </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onSelectNav("settings")}
+              aria-label="Settings"
+              title="Settings"
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                activeNav === "settings"
+                  ? "border-lagoon bg-lagoon/10 text-lagoon dark:border-emerald-400/60 dark:bg-emerald-500/15 dark:text-emerald-300"
+                  : "border-ink/15 bg-white text-slate-700 hover:border-lagoon/50 hover:text-lagoon dark:border-white/15 dark:bg-ink-deep dark:text-slate-200 dark:hover:border-emerald-400/50 dark:hover:text-emerald-300"
+              }`}
+            >
+              <Settings size={14} aria-hidden />
+              <span className="hidden md:inline">Settings</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onSignOut}
+              aria-label="Sign out"
+              title="Sign out"
+              className="inline-flex items-center gap-1.5 rounded-full border border-ink/15 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:border-red-300 hover:bg-red-50 hover:text-red-700 dark:border-white/15 dark:bg-ink-deep dark:text-slate-200 dark:hover:border-red-900/60 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+            >
+              <LogOut size={14} aria-hidden />
+              <span className="hidden md:inline">Sign Out</span>
             </button>
           </div>
         </header>

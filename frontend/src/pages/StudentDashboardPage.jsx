@@ -380,6 +380,7 @@ export default function StudentDashboardPage() {
       drawer={
         <AICoachDrawer
           isOpen={isAiOpen}
+          onToggle={() => setIsAiOpen((open) => !open)}
           onClose={() => setIsAiOpen(false)}
           messages={chatMessages}
           isThinking={isAiThinking}
