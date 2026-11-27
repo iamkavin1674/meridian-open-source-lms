@@ -1,5 +1,6 @@
 import { CheckCircle2, LogOut } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { Navigate, useNavigate } from "react-router-dom";
 
 import ForgotPasswordFlow from "../components/auth/ForgotPasswordFlow.jsx";
 import LoginForm from "../components/auth/LoginForm.jsx";
@@ -22,6 +23,7 @@ function initialDark() {
 
 export default function LoginPage() {
   const { isAuthenticated, user, initializing, logout } = useAuth();
+  const navigate = useNavigate();
   const [isDark, setIsDark] = useState(initialDark);
   const [tab, setTab] = useState("signin");
   const [inForgotFlow, setInForgotFlow] = useState(false);
@@ -36,12 +38,22 @@ export default function LoginPage() {
     }
   }, [isDark]);
 
+  useEffect(() => {
+    if (!initializing && isAuthenticated) {
+      navigate("/dashboard", { replace: true });
+    }
+  }, [initializing, isAuthenticated, navigate]);
+
   const toggleTheme = useCallback(() => setIsDark((v) => !v), []);
 
   function showSignInWithBanner(message) {
     setInForgotFlow(false);
     setTab("signin");
     setBanner(message);
+  }
+
+  if (!initializing && isAuthenticated) {
+    return <Navigate to="/dashboard" replace />;
   }
 
   return (
