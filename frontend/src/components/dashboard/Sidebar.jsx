@@ -16,15 +16,6 @@ const NAV_ITEMS = [
   { id: "survey", label: "Weekly Survey", icon: ClipboardCheck },
 ];
 
-function getInitials(fullName, email) {
-  const source = (fullName || email || "M").trim();
-  const parts = source.split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) {
-    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
-  }
-  return source.slice(0, 2).toUpperCase();
-}
-
 export default function Sidebar({
   activeNav,
   onSelectNav,
@@ -32,13 +23,8 @@ export default function Sidebar({
   onCloseMobile,
   isAiOpen,
   onToggleAi,
-  user,
   onSignOut,
 }) {
-  const displayName = user?.full_name || "Meridian Student";
-  const displayEmail = user?.email || "Signed-in learner";
-  const avatarUrl = user?.avatar_url || user?.picture || "";
-  const initials = getInitials(user?.full_name, user?.email);
 
   function handleNavClick(id) {
     onSelectNav(id);
@@ -143,34 +129,9 @@ export default function Sidebar({
           </div>
         </div>
 
-        {/* Bottom Pinned Profile & Settings */}
+        {/* Bottom Pinned Settings & Sign Out */}
         <div className="mt-auto border-t border-ink/10 p-3 dark:border-white/10">
-          <div className="flex items-center gap-3 rounded-lg px-2 py-2">
-            {avatarUrl ? (
-              <img
-                src={avatarUrl}
-                alt={displayName}
-                className="h-9 w-9 shrink-0 rounded-full border border-ink/15 object-cover dark:border-white/20"
-              />
-            ) : (
-              <div
-                aria-hidden="true"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ink text-xs font-semibold text-white dark:bg-emerald-400 dark:text-ink-deep"
-              >
-                {initials}
-              </div>
-            )}
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold text-ink dark:text-white">
-                {displayName}
-              </p>
-              <p className="truncate text-xs text-slate-500 dark:text-slate-400">
-                {displayEmail}
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-2 grid grid-cols-2 gap-1.5">
+          <div className="grid grid-cols-2 gap-1.5">
             <button
               type="button"
               onClick={() => handleNavClick("settings")}

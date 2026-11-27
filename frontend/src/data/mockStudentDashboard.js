@@ -1,5 +1,10 @@
 export const DASHBOARD_CONTEXT_LABEL = "Week 6 Progress & Latest Feedback";
 
+export const LEARNING_STREAK = {
+  days: 12,
+  label: "12-day learning streak",
+};
+
 export const INITIAL_ACTION_PLAN = [
   {
     id: "step-1",
